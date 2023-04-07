@@ -10,11 +10,14 @@ import (
 var upgrader = websocket.Upgrader{}
 
 func CreateSocketHandler(w http.ResponseWriter, r *http.Request) {
-	_, err := upgrader.Upgrade(w, r, nil)
+	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("failed to upgrade to a socket connection\n")
 		return
 	}
 
 	// create a new client
+	client := NewClient(conn)
+
+	client.Listen()
 }
