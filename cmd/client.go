@@ -27,6 +27,8 @@ type client struct {
 	writeMsg chan responseMessage
 }
 
+const DefaultMaxLimit = 4
+
 type Client interface {
 	Listen()
 	ClientInfo()
@@ -46,19 +48,24 @@ func (c *client) listenRead() {
 		if err != nil {
 			log.Println(err)
 			c.writeMsg <- responseMessage{Err: err.Error(), Status: http.StatusBadRequest}
-			return
+			continue
 		}
 		if m.CreateRoom {
 			// code for room creation
 			if m.MaxPlayerLimit == 0 {
-				m.MaxPlayerLimit = room.DefaultRoomLimit
+				m.MaxPlayerLimit = DefaultMaxLimit
 			}
-			rm := room.NewRoom(c.conn, m.MaxPlayerLimit)
+			rm, err := room.NewRoom(c.conn, m.MaxPlayerLimit)
+			if err != nil {
+				log.Println(err)
+				c.writeMsg <- responseMessage{Err: err.Error(), Status: http.StatusBadRequest}
+				continue
+			}
 			err = AvailableRooms.AddRoom(rm)
 			if err != nil {
 				log.Println(err)
 				c.writeMsg <- responseMessage{Err: err.Error(), Status: http.StatusInternalServerError}
-				return
+				continue
 			}
 			c.room = rm
 			c.writeMsg <- responseMessage{Err: "", Status: http.StatusCreated}
@@ -67,16 +74,17 @@ func (c *client) listenRead() {
 			// if satisy, join into the room
 			if c.room != nil {
 				c.writeMsg <- responseMessage{Err: "client already aligned with a room", Status: http.StatusBadRequest}
-				return
+				continue
 			}
 			if m.MaxPlayerLimit == 0 {
-				m.MaxPlayerLimit = room.DefaultRoomLimit
+				m.MaxPlayerLimit = DefaultMaxLimit
 			}
 
 			rm, err := AvailableRooms.MatchRoom(c.conn, m.MaxPlayerLimit)
 			if err != nil {
 				log.Println(err)
 				c.writeMsg <- responseMessage{Err: err.Error(), Status: http.StatusInternalServerError}
+				continue
 			}
 			c.room = rm
 			c.writeMsg <- responseMessage{Err: "", Status: http.StatusOK}
@@ -84,8 +92,9 @@ func (c *client) listenRead() {
 			// code for starting the game
 			if c.room == nil {
 				c.writeMsg <- responseMessage{Err: "client don't belong to any room", Status: http.StatusBadRequest}
+			} else {
+				c.room.StartGame()
 			}
-			c.room.StartGame()
 		} else if m.EndGame {
 			// code for ending game
 			return

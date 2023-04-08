@@ -21,8 +21,8 @@ type RoomPool interface {
 }
 
 func (rp *roomPool) AddRoom(rm Room) error {
-	if rm == nil {
-		return errors.New("nil rooms can't be added")
+	if !IsRoomValid(rm) {
+		return errors.New("the given room is not valid")
 	}
 	rp.mut.Lock()
 	defer rp.mut.Unlock()
@@ -38,8 +38,8 @@ func (rp *roomPool) AddRoom(rm Room) error {
 }
 
 func (rp *roomPool) RemoveRoom(rm Room) error {
-	if rm == nil {
-		return errors.New("nil rooms can't be deleted")
+	if !IsRoomValid(rm) {
+		return errors.New("the given room is not valid")
 	}
 
 	rp.mut.Lock()
@@ -64,7 +64,7 @@ func (rp *roomPool) MatchRoom(conn *websocket.Conn, maxPlayerLength int) (Room, 
 	defer rp.mut.Unlock()
 
 	for _, room := range rp.rooms {
-		if room.MaxPlayerLimit() == maxPlayerLength && !room.IsFull() {
+		if room.CurrentPlayersSize() != 0 && room.MaxPlayerLimit() == maxPlayerLength && !room.IsFull() {
 			_, err := room.JoinRoom(conn)
 			if err != nil {
 				return nil, err

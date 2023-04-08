@@ -24,8 +24,8 @@ const (
 type CardValue int
 
 type Card struct {
-	Value int
-	Suit  SuitType
+	Value int      `json:"value"`
+	Suit  SuitType `json:"suit"`
 }
 
 type PlayerEvent struct {
@@ -36,6 +36,7 @@ type PlayerEvent struct {
 type playerResponse struct {
 	Err    string `json:"error"`
 	Winner string `json:"winner"`
+	Draw   bool   `json:"draw"`
 	Status int    `json:"status"`
 }
 
@@ -57,7 +58,6 @@ type Game struct {
 	players     []Player
 	playerTurn  int
 
-	winnerSignal chan int
 	EndSignal    chan EndInfo
 	eventEmitter chan playerResponse
 	Err          error
@@ -127,7 +127,8 @@ func (g *Game) Start() {
 		}
 		if cardPlayed.Skip || !g.checkCardEligibility(cardPlayed) {
 			if len(g.drawPile) == 0 {
-				g.EndSignal <- EndInfo{Draw: true}
+				go (func() { g.EndSignal <- EndInfo{Draw: true} })()
+				break
 			}
 			card := g.drawPile[len(g.drawPile)-1]
 			player.Cards = append(player.Cards, card)
@@ -137,27 +138,29 @@ func (g *Game) Start() {
 		g.discardPile = append(g.discardPile, cardPlayed.Card)
 
 		if len(player.Cards) == 0 {
-			g.winnerSignal <- g.playerTurn
-			close(g.winnerSignal)
+			go (func() {
+				g.EndSignal <- EndInfo{Winner: g.playerTurn}
+				close(g.EndSignal)
+			})()
 			break
 		}
 		g.playerTurn++
 	}
-	select {
-	case end := <-g.EndSignal:
-		var event playerResponse
-		if end.Err != nil {
-			event.Err = end.Err.Error()
-			g.broadcastPlayEvent(event)
-			return
-		}
-		event.Winner = g.players[end.Winner].Conn.LocalAddr().String()
+	end := <-g.EndSignal
+	var event playerResponse
+	if end.Err != nil {
+		event.Err = end.Err.Error()
 		g.broadcastPlayEvent(event)
-		close(g.eventEmitter)
-		close(g.winnerSignal)
 		return
-	default:
 	}
+	if !end.Draw {
+		event.Winner = g.players[end.Winner].Conn.LocalAddr().String()
+	} else {
+		event.Draw = true
+	}
+	event.Status = http.StatusOK
+	g.broadcastPlayEvent(event)
+	close(g.eventEmitter)
 }
 
 func (g *Game) GetPlayer(index int) (Player, error) {
@@ -197,7 +200,7 @@ func (g *Game) listenPlayEvent() {
 				if err != nil {
 					log.Println(err)
 					g.eventEmitter <- playerResponse{Err: err.Error(), Status: http.StatusBadRequest}
-					return
+					continue
 				}
 				player.GetData <- m
 			}
@@ -210,11 +213,15 @@ func NewGame(players []Player) (*Game, error) {
 	if len(players) < 2 {
 		return nil, errors.New("minimum 2 players needed to start a game")
 	}
+	for _, player := range players {
+		if player.Conn == nil {
+			return nil, errors.New("invalid players can't start a game")
+		}
+	}
 	return &Game{
-		players:      players,
-		drawPile:     make([]Card, 0, 12),
-		discardPile:  make([]Card, 0, 5),
-		winnerSignal: make(chan int),
-		EndSignal:    make(chan EndInfo),
+		players:     players,
+		drawPile:    make([]Card, 0, 12),
+		discardPile: make([]Card, 0, 5),
+		EndSignal:   make(chan EndInfo),
 	}, nil
 }

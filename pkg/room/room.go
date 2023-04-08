@@ -8,8 +8,6 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-const DefaultRoomLimit = 4
-
 type room struct {
 	conns          []*websocket.Conn
 	maxPlayerLimit int
@@ -26,6 +24,10 @@ type Room interface {
 	IsFull() bool
 }
 
+func IsRoomValid(r Room) bool {
+	return r != nil && r.CurrentPlayersSize() > 0
+}
+
 func (r *room) JoinRoom(conn *websocket.Conn) (bool, error) {
 	if conn == nil {
 		return false, errors.New("nil connection can't join a room")
@@ -34,6 +36,7 @@ func (r *room) JoinRoom(conn *websocket.Conn) (bool, error) {
 	defer r.mut.Unlock()
 	if !r.IsFull() {
 		r.conns = append(r.conns, conn)
+		r.currentPlayers++
 		return true, nil
 	}
 	return false, nil
@@ -56,6 +59,7 @@ func (r *room) LeaveRoom(conn *websocket.Conn) (bool, error) {
 	for i := range r.conns {
 		if r.conns[i] == conn {
 			r.conns = append(r.conns[:i], r.conns[i+1:]...)
+			r.currentPlayers--
 			return false, nil
 		}
 	}
@@ -77,13 +81,16 @@ func (r *room) IsFull() bool {
 	return r.MaxPlayerLimit() <= r.CurrentPlayersSize()
 }
 
-func NewRoom(conn *websocket.Conn, maxPlayer int) Room {
+func NewRoom(conn *websocket.Conn, maxPlayer int) (Room, error) {
+	if maxPlayer <= 0 {
+		return nil, errors.New("max player limit can't be negative or zero")
+	}
 	rm := new(room)
 	rm.maxPlayerLimit = maxPlayer
-	rm.conns = make([]*websocket.Conn, 0, DefaultRoomLimit)
+	rm.conns = make([]*websocket.Conn, 0, 4)
 	rm.conns = append(rm.conns, conn)
 	rm.currentPlayers = 1
-	return rm
+	return rm, nil
 }
 
 func (r *room) StartGame() error {
