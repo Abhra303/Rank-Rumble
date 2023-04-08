@@ -82,7 +82,7 @@ func (c *client) listenRead() {
 			c.writeMsg <- responseMessage{Err: "", Status: http.StatusOK}
 		} else if m.StartGame {
 			// code for starting the game
-			return
+			c.room.StartGame()
 		} else if m.EndGame {
 			// code for ending game
 			return

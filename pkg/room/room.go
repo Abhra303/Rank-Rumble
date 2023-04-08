@@ -3,6 +3,7 @@ package room
 import (
 	"sync"
 
+	"github.com/Abhra303/Rank-Rumble/pkg/game"
 	"github.com/efficientgo/core/errors"
 	"github.com/gorilla/websocket"
 )
@@ -21,6 +22,7 @@ type Room interface {
 	MaxPlayerLimit() int
 	LeaveRoom(*websocket.Conn) (bool, error)
 	CurrentPlayersSize() int
+	StartGame() error
 	IsFull() bool
 }
 
@@ -82,4 +84,20 @@ func NewRoom(conn *websocket.Conn, maxPlayer int) Room {
 	rm.conns = append(rm.conns, conn)
 	rm.currentPlayers = 1
 	return rm
+}
+
+func (r *room) StartGame() error {
+	if r.conns == nil {
+		return errors.New("room doesn't have any players")
+	}
+	players := make([]game.Player, len(r.conns))
+	for i, conn := range r.conns {
+		players[i] = game.Player{Conn: conn}
+	}
+	g, err := game.NewGame(players)
+	if err != nil {
+		return err
+	}
+	g.Start()
+	return nil
 }
