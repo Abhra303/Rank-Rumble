@@ -102,5 +102,5 @@ func (c *client) listenWrite() {
 }
 
 func NewClient(conn *websocket.Conn) Client {
-	return &client{conn: conn, writeMsg: make(chan responseMessage, 1)}
+	return &client{conn: conn, writeMsg: make(chan responseMessage)}
 }
