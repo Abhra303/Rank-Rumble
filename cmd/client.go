@@ -82,6 +82,9 @@ func (c *client) listenRead() {
 			c.writeMsg <- responseMessage{Err: "", Status: http.StatusOK}
 		} else if m.StartGame {
 			// code for starting the game
+			if c.room == nil {
+				c.writeMsg <- responseMessage{Err: "client don't belong to any room", Status: http.StatusBadRequest}
+			}
 			c.room.StartGame()
 		} else if m.EndGame {
 			// code for ending game
