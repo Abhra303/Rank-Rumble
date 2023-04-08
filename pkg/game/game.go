@@ -2,16 +2,35 @@ package game
 
 import (
 	"log"
+	"math/rand"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/efficientgo/core/errors"
 	"github.com/gorilla/websocket"
 )
 
-type Card int
+type SuitType int
+
+const (
+	NoSuit SuitType = iota
+	Club
+	Heart
+	Spade
+	Diamond
+)
+
+type CardValue int
+
+type Card struct {
+	Value int
+	Suit  SuitType
+}
 
 type PlayerEvent struct {
+	Skip bool `json:"skip,omitempty"`
+	Card Card `json:"card"`
 }
 
 type playerResponse struct {
@@ -21,14 +40,15 @@ type playerResponse struct {
 }
 
 type Player struct {
-	Conn       *websocket.Conn
-	totalCards int
-	emitEvent  chan PlayerEvent
+	Conn    *websocket.Conn
+	GetData chan PlayerEvent
+	Cards   []Card
 }
 
 type EndInfo struct {
 	Err    error
 	Winner int
+	Draw   bool
 }
 
 type Game struct {
@@ -41,13 +61,88 @@ type Game struct {
 	EndSignal    chan EndInfo
 	eventEmitter chan playerResponse
 	Err          error
-	wg           *sync.WaitGroup
+}
+
+func cardInPlayerCards(player Player, ccard Card) bool {
+	for _, card := range player.Cards {
+		if card.Value == ccard.Value {
+			return true
+		}
+	}
+	return false
+}
+
+func (g *Game) prepareCards() {
+	deck := make([]Card, 52)
+	suits := []SuitType{Club, Heart, Spade, Diamond}
+	for i, suit := range suits {
+		for j := 0; j < 13; j++ {
+			deck[j+i*13] = Card{Value: j, Suit: suit}
+		}
+	}
+
+	r := rand.New(rand.NewSource(time.Now().Unix()))
+	ret := make([]Card, 52)
+	perm := r.Perm(52)
+	for i, randIndex := range perm {
+		ret[i] = deck[randIndex]
+	}
+
+	k := 0
+	for i := 0; i < 5; i++ {
+		for j, player := range g.players {
+			k = i*4 + j
+			player.Cards = append(player.Cards, ret[k])
+		}
+	}
+	g.drawPile = append(g.drawPile, ret[k+1:]...)
+}
+
+func (g *Game) checkCardEligibility(cardPlayed PlayerEvent) bool {
+	length := len(g.discardPile)
+	if length == 0 {
+		return true
+	}
+	dCard := g.discardPile[length-1]
+	if cardPlayed.Card.Suit == dCard.Suit || cardPlayed.Card.Value >= dCard.Value {
+		return true
+	}
+	return false
 }
 
 func (g *Game) Start() {
-	g.wg.Add(1)
 	go g.broadcastPlayEventListener()
 	go g.listenPlayEvent()
+	g.prepareCards()
+	g.playerTurn = 0
+	for {
+		if g.playerTurn >= len(g.players) {
+			g.playerTurn = 0
+		}
+		player := g.players[g.playerTurn]
+		cardPlayed := <-player.GetData
+		if !cardPlayed.Skip && !cardInPlayerCards(player, cardPlayed.Card) {
+			g.eventEmitter <- playerResponse{Err: "the card is not present in player's stock"}
+			continue
+		}
+		if cardPlayed.Skip || !g.checkCardEligibility(cardPlayed) {
+			if len(g.drawPile) == 0 {
+				g.EndSignal <- EndInfo{Draw: true}
+			}
+			card := g.drawPile[len(g.drawPile)-1]
+			player.Cards = append(player.Cards, card)
+			g.drawPile = g.drawPile[:len(g.drawPile)-1]
+			continue
+		}
+		g.discardPile = append(g.discardPile, cardPlayed.Card)
+
+		if len(player.Cards) == 0 {
+			g.winnerSignal <- g.playerTurn
+			close(g.winnerSignal)
+			break
+		}
+		g.playerTurn++
+	}
 	select {
 	case end := <-g.EndSignal:
 		var event playerResponse
@@ -63,7 +158,6 @@ func (g *Game) Start() {
 		return
 	default:
 	}
-	g.wg.Wait()
 }
 
 func (g *Game) GetPlayer(index int) (Player, error) {
@@ -71,16 +165,6 @@ func (g *Game) GetPlayer(index int) (Player, error) {
 		return Player{}, errors.New("given index exceeds the player index")
 	}
 	return g.players[index], nil
-}
-
-func (g *Game) getWinner() {
-	c := <-g.winnerSignal
-	var err error
-	if c >= len(g.players) {
-		err = errors.New("winner index exceeds the player index")
-	}
-	g.EndSignal <- EndInfo{Err: err, Winner: c}
-	close(g.EndSignal)
 }
 
 func (g *Game) broadcastPlayEventListener() {
@@ -102,21 +186,24 @@ func (g *Game) broadcastPlayEvent(event playerResponse) {
 }
 
 func (g *Game) listenPlayEvent() {
-	defer g.wg.Done()
-	for {
-		var m PlayerEvent
-		err := g.players[g.playerTurn].Conn.ReadJSON(&m)
-		if err != nil {
-			log.Println(err)
-			g.eventEmitter <- playerResponse{Err: err.Error(), Status: http.StatusBadRequest}
-			return
-		}
-		// code for game condition
-		// TODO: implement the code
-		g.EndSignal <- EndInfo{Err: nil, Winner: 0}
-		close(g.EndSignal)
-		break
+	var wg *sync.WaitGroup
+	wg.Add(len(g.players))
+	for _, player := range g.players {
+		go (func(player Player, wg *sync.WaitGroup) {
+			defer wg.Done()
+			for {
+				var m PlayerEvent
+				err := player.Conn.ReadJSON(&m)
+				if err != nil {
+					log.Println(err)
+					g.eventEmitter <- playerResponse{Err: err.Error(), Status: http.StatusBadRequest}
+					return
+				}
+				player.GetData <- m
+			}
+		})(player, wg)
 	}
+	wg.Wait()
 }
 
 func NewGame(players []Player) (*Game, error) {
@@ -129,6 +216,5 @@ func NewGame(players []Player) (*Game, error) {
 		discardPile:  make([]Card, 0, 5),
 		winnerSignal: make(chan int),
 		EndSignal:    make(chan EndInfo),
-		wg:           new(sync.WaitGroup),
 	}, nil
 }
